@@ -3441,14 +3441,14 @@ Omarchy's local application manager and shows the same review window for all of 
 - **AppImages**: the `.AppImage` / `.appimage` extension, or an extensionless binary carrying the
   Type 2 AppImage magic `\x7fELF` and `AI\x02` at offset 8.
 - **Arch packages**: a name ending `.pkg.tar.zst`, `.pkg.tar.xz`, `.pkg.tar.gz`, `.pkg.tar.bz2`,
-  `.pkg.tar.lzo` or `.pkg.tar`. There is no magic to read — the file is an ordinary compressed
-  tarball — so the name is the whole claim, and `photos.tar.zst` deliberately does not match.
+  `.pkg.tar.lzo`, `.pkg.tar.lrz`, `.pkg.tar.lz4`, `.pkg.tar.lz`, `.pkg.tar.Z` or `.pkg.tar`.
+  There is no magic to read — the file is an ordinary compressed tarball — so the name is the whole claim, and `photos.tar.zst` deliberately does not match.
 - **Debian packages**: the `.deb` extension, or an `ar` archive whose first member is
   `debian-binary`. The `!<arch>\n` magic alone is not enough: a static library is the same
   container and must keep going to the desktop.
 - **RPM packages**: the `.rpm` extension, or the magic `\xed\xab\xee\xdb`.
 
-`appshelf::open` spawns `appshelf <path>` detached with `Stdio::null()` and leads its own process
+`appshelf::open` spawns `appshelf <path>` detached with `Stdio::null()` and runs in its own process
 group, answering `0` on launch. When `appshelf` is not installed, it falls through to `gio open`,
 keeping the default desktop association behavior. Recognition here only has to be a good guess:
 AppShelf reads the file itself and refuses it with its own message if this was wrong, which is why

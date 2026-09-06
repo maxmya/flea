@@ -318,7 +318,7 @@ wait_for_line "$appshelf_opened" '^THP_enabled'
 check "an AppImage hands off to appshelf" "0" "$rc"
 check "appshelf was given the target path" "$appimage_file" "$(cat "$appshelf_last")"
 check "appshelf got no inherited pipe" "1" "$(grep -c '^FD1 /dev/null$' "$appshelf_opened")"
-check "appshelf leads its own process group" "1" "$(grep -c '^PGID MATCH' "$appshelf_opened")"
+check "appshelf runs in its own process group" "1" "$(grep -c '^PGID MATCH' "$appshelf_opened")"
 
 # System packages take the same route: AppShelf reviews a .deb, an .rpm and an
 # Arch package before pacman is asked to install anything.
@@ -338,12 +338,30 @@ PATH="$D/appshelfbin:$D/bin:/usr/bin:/bin" $BIN --open "$rpm_file" >/dev/null 2>
 wait_for_line "$appshelf_opened" '^THP_enabled'
 check "an .rpm hands off to appshelf" "$rpm_file" "$(cat "$appshelf_last")"
 
-arch_file="$D/hello-2.10-3-x86_64.pkg.tar.zst"
-printf '\050\265\057\375 not really compressed' > "$arch_file"
-: > "$appshelf_opened"
-PATH="$D/appshelfbin:$D/bin:/usr/bin:/bin" $BIN --open "$arch_file" >/dev/null 2>&1
-wait_for_line "$appshelf_opened" '^THP_enabled'
-check "an Arch package hands off to appshelf" "$arch_file" "$(cat "$appshelf_last")"
+for suffix in zst lrz lz4 lz Z; do
+  arch_file="$D/hello-2.10-3-x86_64.pkg.tar.$suffix"
+  printf 'not really compressed' > "$arch_file"
+  : > "$appshelf_opened"
+  PATH="$D/appshelfbin:$D/bin:/usr/bin:/bin" $BIN --open "$arch_file" >/dev/null 2>&1
+  wait_for_line "$appshelf_opened" '^THP_enabled'
+  check "an Arch .$suffix package hands off to appshelf" "$arch_file" "$(cat "$appshelf_last")"
+done
+
+# Content recognition accepts a complete Debian member name, never a prefix.
+for member in 'debian-binary   ' 'debian-binary/  ' 'debian-binaryx   '; do
+  archive="$D/extensionless-ar"
+  printf '!<arch>\n%s' "$member" > "$archive"
+  : > "$opened"
+  : > "$appshelf_opened"
+  PATH="$D/appshelfbin:$D/bin:/usr/bin:/bin" $BIN --open "$archive" >/dev/null 2>&1
+  if [ "$member" = 'debian-binaryx   ' ]; then
+    wait_for_line "$opened" '^THP_enabled'
+    check "a Debian member prefix falls through to gio" "1" "$(grep -c "^ARGV open $archive$" "$opened")"
+  else
+    wait_for_line "$appshelf_opened" '^THP_enabled'
+    check "a Debian member '$member' hands off to appshelf" "$archive" "$(cat "$appshelf_last")"
+  fi
+done
 
 # An ordinary tarball is not a package, whatever it is compressed with, and it
 # must keep going to the desktop's own archive handler.

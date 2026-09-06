@@ -16,12 +16,14 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+/// Compare the final filename extension without ASCII case sensitivity.
 fn extension_is(path: &Path, wanted: &str) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case(wanted))
 }
 
+/// Read up to `len` bytes; return `None` if opening or reading fails.
 fn header(path: &Path, len: usize) -> Option<Vec<u8>> {
     use std::io::Read;
     let mut file = std::fs::File::open(path).ok()?;
@@ -38,6 +40,7 @@ fn header(path: &Path, len: usize) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+/// Recognize an AppImage by extension or Type 2 ELF magic.
 pub fn is_appimage(path: &Path) -> bool {
     if extension_is(path, "appimage") {
         return true;
@@ -54,11 +57,14 @@ pub fn is_deb(path: &Path) -> bool {
     if extension_is(path, "deb") {
         return true;
     }
-    header(path, 21).is_some_and(|h| {
-        h.len() == 21 && h.starts_with(b"!<arch>\n") && &h[8..21] == b"debian-binary"
+    header(path, 24).is_some_and(|h| {
+        h.len() == 24
+            && h.starts_with(b"!<arch>\n")
+            && matches!(&h[8..24], b"debian-binary   " | b"debian-binary/  ")
     })
 }
 
+/// Recognize an RPM by extension or its four-byte lead magic.
 pub fn is_rpm(path: &Path) -> bool {
     extension_is(path, "rpm") || header(path, 4).is_some_and(|h| h.starts_with(b"\xed\xab\xee\xdb"))
 }
@@ -76,6 +82,10 @@ pub fn is_arch_package(path: &Path) -> bool {
                 ".pkg.tar.gz",
                 ".pkg.tar.bz2",
                 ".pkg.tar.lzo",
+                ".pkg.tar.lrz",
+                ".pkg.tar.lz4",
+                ".pkg.tar.lz",
+                ".pkg.tar.z",
                 ".pkg.tar",
             ]
             .iter()
@@ -88,6 +98,8 @@ pub fn handles(path: &Path) -> bool {
     is_appimage(path) || is_arch_package(path) || is_deb(path) || is_rpm(path)
 }
 
+/// Launch AppShelf in its own process group with detached standard streams.
+/// Return zero on launch, or `None` so the caller can try the desktop opener.
 pub fn open(target: &Path) -> Option<i32> {
     // corner: spawn and not exec or status, because appshelf outlives us; see AGENTS.md "Opening a file".
     let started = Command::new("appshelf")
@@ -148,6 +160,13 @@ mod tests {
         for name in [
             "a-1-1-x86_64.pkg.tar.zst",
             "a-1-1-x86_64.pkg.tar.xz",
+            "a-1-1-x86_64.pkg.tar.gz",
+            "a-1-1-x86_64.pkg.tar.bz2",
+            "a-1-1-x86_64.pkg.tar.lzo",
+            "a-1-1-x86_64.pkg.tar.lrz",
+            "a-1-1-x86_64.pkg.tar.lz4",
+            "a-1-1-x86_64.pkg.tar.lz",
+            "a-1-1-x86_64.pkg.tar.Z",
             "a.PKG.TAR.ZST",
             "a-1-1-any.pkg.tar",
         ] {
@@ -157,9 +176,16 @@ mod tests {
         }
         // The compression alone is not the claim: an ordinary tarball is not a
         // package and must keep going to the desktop's archive handler.
-        let plain = sandbox.file("photos.tar.zst", "not a package");
-        assert!(!is_arch_package(&plain));
-        assert!(!handles(&plain));
+        for name in [
+            "photos.tar.zst",
+            "photos.tar.lz4",
+            "a.pkg.tar.zst.sig",
+            "a.pkg.tarball",
+        ] {
+            let plain = sandbox.file(name, "not a package");
+            assert!(!is_arch_package(&plain), "{name}");
+            assert!(!handles(&plain), "{name}");
+        }
     }
 
     #[test]
@@ -169,11 +195,22 @@ mod tests {
         assert!(is_deb(&named));
         assert!(handles(&named));
 
-        let bare = sandbox.join("extensionless-deb");
-        let mut bytes = b"!<arch>\ndebian-binary".to_vec();
-        bytes.extend_from_slice(b"   1700000000  0     0     100644  4         `\n2.0\n");
-        std::fs::write(&bare, bytes).unwrap();
-        assert!(is_deb(&bare));
+        for member in ["debian-binary   ", "debian-binary/  "] {
+            let bare = sandbox.file("extensionless-deb", &format!("!<arch>\n{member}"));
+            assert!(is_deb(&bare), "{member}");
+            assert!(handles(&bare), "{member}");
+        }
+        for member in [
+            "debian-binaryx   ",
+            "debian-binary/x  ",
+            "debian-binary x  ",
+            "debian-binary",
+            "debian-binary/",
+        ] {
+            let bare = sandbox.file("not-a-deb", &format!("!<arch>\n{member}"));
+            assert!(!is_deb(&bare), "{member}");
+            assert!(!handles(&bare), "{member}");
+        }
 
         // The same container holds a static library, which AppShelf must not
         // be offered.
