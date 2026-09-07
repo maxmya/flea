@@ -23,9 +23,13 @@ fn extension_is(path: &Path, wanted: &str) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case(wanted))
 }
 
-/// Read up to `len` bytes; return `None` if opening or reading fails.
+/// Read up to `len` bytes from a regular file; return `None` on failure.
 fn header(path: &Path, len: usize) -> Option<Vec<u8>> {
     use std::io::Read;
+    // Follow links like open does, but never open a FIFO that could wait forever for a writer.
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
     let mut file = std::fs::File::open(path).ok()?;
     let mut bytes = vec![0u8; len];
     let mut filled = 0;
@@ -121,6 +125,25 @@ pub fn open(target: &Path) -> Option<i32> {
 mod tests {
     use super::*;
     use crate::backend::testdir::TestDir;
+    use crate::backend::fifotest::{mkfifo, within};
+
+    #[test]
+    fn header_rejects_non_regular_files_without_blocking() {
+        let sandbox = TestDir::new("appshelf-file-kinds");
+        let fifo = sandbox.join("pipe");
+        mkfifo(&fifo);
+        std::os::unix::fs::symlink("pipe", sandbox.join("pipe-link")).unwrap();
+        for path in [fifo, sandbox.join("pipe-link"), sandbox.dir("directory")] {
+            within("AppShelf recognition", move || {
+                assert_eq!(header(&path, 12), None);
+                assert!(!handles(&path));
+            });
+        }
+        let real = sandbox.file("regular", "header bytes");
+        assert_eq!(header(&real, 6), Some(b"header".to_vec()));
+        std::os::unix::fs::symlink("regular", sandbox.join("regular-link")).unwrap();
+        assert_eq!(header(&sandbox.join("regular-link"), 6), Some(b"header".to_vec()));
+    }
 
     #[test]
     fn appimage_extension_is_recognized() {
