@@ -34,10 +34,13 @@ To make Flea the default file manager:
 flea --default
 ```
 
-This sets Flea as the `inode/directory` handler, makes Omarchy's two file-manager keys,
-`SUPER + SHIFT + F` and `SUPER + ALT + SHIFT + F`, open it instead of Nautilus, and claims the file
-chooser described below. Run `flea --default off` before `omarchy pkg drop flea` to restore the
-previous handlers and remove it.
+This sets Flea as the `inode/directory` handler, puts Flea in front of the other file managers for
+"Show in folder", makes Omarchy's two file-manager keys, `SUPER + SHIFT + F` and
+`SUPER + ALT + SHIFT + F`, open it instead of Nautilus, and claims the file chooser described below.
+Run `flea --default off` before `omarchy pkg drop flea`: it puts the keys, "Show in folder" and the
+chooser back and deletes Flea's handler line, which leaves the `inode/directory` default wherever
+the rest of the lookup resolves to rather than at a handler you had pinned yourself, see
+[`docs/install.md`](docs/install.md).
 
 To make Flea the file chooser every application opens, the dialog behind `omarchy tailscale send`
 and every Flatpak's Open and Save:
@@ -53,15 +56,40 @@ portal caller on the box at once. It writes one interface key to
 other portal keep the backend they already had. It also adds one Hyprland rule that gives the chooser
 the same floating treatment Omarchy already gives the GTK one. `flea --picker off` puts both back.
 
+"Show in folder" is one more thing `flea --default` claims. Chromium, Firefox, Steam and every
+other application that reveals a downloaded file call `org.freedesktop.FileManager1` on the session
+bus, and Flea answers it by opening the file's own directory with the file selected. No process sits
+on that name while Flea is not running: D-Bus starts the service on the call and it exits again half
+a minute later.
+
+**Installing does not decide that one, and this is why.** Nautilus, Dolphin, Thunar and Nemo each
+register for that same name, and Omarchy ships Nautilus in `omarchy-base.packages`, so on a stock
+box there are at least two claimants in `/usr/share/dbus-1/services`. D-Bus keeps the FIRST
+registration it reads, and which of them that is inside one directory depends on which bus you run:
+dbus-broker 37, the one Omarchy runs, sorts the directory; dbus-daemon 1.16.2 takes it in readdir
+order. Neither is newest-wins and neither is anything an installer can steer. On this box today,
+with four claimants installed, the one that answers is Nemo's.
+`flea --default` settles it from outside that directory instead of joining the queue, by writing one
+registration to `~/.local/share/dbus-1/services`, which D-Bus reads before every system directory.
+Ask the box which one answers, and it tells you by naming the ones it threw away:
+
+```bash
+journalctl --user -b | grep "duplicate name 'org.freedesktop.FileManager1'"
+```
+
+The claimant that is not on that list is the one answering. `flea --default off` removes Flea's file
+and hands the name back.
+
 To track `main` instead of releases, use the AUR package:
 
 ```bash
 omarchy pkg aur add flea-git
 ```
 
-Five optional packages each unlock one feature and nothing else: `libarchive` for archive listing
-and extraction, `7zip` for `.7z` archives, `imagemagick` for image conversion, `tailscale` for
-Taildrop sharing, and `appshelf` for AppImages and `.pkg.tar.*`, `.deb` and `.rpm` packages.
+Seven optional packages each unlock one feature and nothing else: `libarchive` for archive listing
+and extraction, `7zip` for `.7z` archives, `imagemagick` for image conversion, `ffmpeg` for the
+media metadata the preview column reads, `dropbox-cli` for Dropbox share links, and `tailscale` for
+Taildrop sharing, plus `appshelf` for AppImages and `.pkg.tar.*`, `.deb` and `.rpm` packages.
 
 [`docs/install.md`](docs/install.md) has the rest: what lands on disk, what `flea --default` writes
 and how to undo it by hand, and how the package proves itself.
@@ -346,8 +374,8 @@ the name is one typed word away.
   the same one setting.
 - **A settings panel** on `,` and on the toolbar's sliders button, with three working groups: a text
   size that follows Omarchy or pins one of its stops; per-action context-menu visibility with one
-  tri-state master over the six basic actions; and a Mac/Windows keyboard preset over that one key
-  table. Nothing else is in it yet.
+  tri-state master over the six basic actions; and a keyboard preset, Default, Vim, Mac or Windows,
+  over that one key table. Nothing else is in it yet.
 - **It looks like Omarchy** because it reads the live palette, the same tokens the shell
   bar uses, and every mark is drawn in the Omarchy cut, which is its own section below.
 
@@ -370,9 +398,13 @@ row:
   the change lands on the menu's next open. Hiding a row never touches its key. Show keyboard hints
   is the one row here that is not an action: off, which is how it ships, no menu prints the key
   beside a row and an empty folder offers no tip; on, both appear. Every chord is bound either way.
-- **Keys.** Mac or Windows, over the one `keys.toml` table. Everything the two platforms agree on
-  is shared and answers under both; the preset carries only the chords where they differ, and it
-  rebinds in the window at once. Press `?` for the whole map.
+- **Keys.** Default, Vim, Mac or Windows, over the one `keys.toml` table. Almost everything is
+  shared and answers under all four; each preset adds only the chords for the actions the shared
+  map does not carry. List, columns and grid are bound nowhere else, so every preset spells them:
+  `Ctrl+1`, `Ctrl+2` and `Ctrl+3` under Default, Vim and Mac, and `Ctrl+Shift` with those digits
+  under Windows. Mac adds Finder's own four beside them and Windows adds `Ctrl+H`. It ships on
+  Default, an unrecognised stored name reads as Default, and a change rebinds in the window at
+  once. Press `?` for the whole map.
 
 The choices live in `~/.local/state/flea/ui.json`, the one file Flea keeps for itself, beside the
 column set and everything else that outlives a window. The text size is stored as `{"mode":"system"}`
@@ -444,32 +476,54 @@ is one character per kind, upgrading to Nerd Font glyphs where the terminal has 
 cargo build --release
 ```
 
-The binary lands at `target/release/flea`. Running it dispatches by mode:
+The binary lands at `target/release/flea`. Running it dispatches by mode. This is what `flea`
+prints as its own usage, so the two cannot disagree:
 
 ```bash
-flea [path]                # terminal in a real terminal, a window everywhere else
-flea --gui [path]          # force the window
-flea --tui [path]          # force the terminal interface (not built yet)
-flea --select <uri|path>   # open the containing directory with that entry selected
-flea --default [off]       # become the desktop's default file manager and chooser, or stop
+flea [--tui|--gui] [--select <uri|path>] [path]
+flea --default [off]
+flea --picker [off]
+flea --ui-state [<json patch>]
+flea --version
 ```
 
-`--tui` and `--gui` are mutually exclusive. With neither given, `flea` opens the terminal
-interface only when both stdin and stdout are a real terminal, and opens the window
-otherwise, which is the branch a `.desktop` launcher takes since it has no controlling
-terminal. `--default` opens no window: it sets the `inode/directory` handler, Omarchy's two
-file-manager keys and the file chooser, and `off` undoes every one of them, see
-[`docs/install.md`](docs/install.md). `--backend`, `--prewarm`, `--open` and `--terminal` are the
-internal modes the UI and the benchmarks drive directly; `flea --open <path>` is what Enter
-on a file runs, and it hands the file to `gio open` and waits for it, while
-`flea --terminal <dir>` is what the topbar's terminal button and `Ctrl+T` run, and it hands the
-directory to `xdg-terminal-exec --dir=`. See `AGENTS.md` for their contract.
+**Bare `flea` opens the window.** It does not look at stdin or stdout, so a real terminal gets the
+window exactly as a `.desktop` launcher does, and `--gui` is the explicit spelling of the same
+thing. `--tui` is the only route to the terminal interface and the only mode that reads the tty at
+all: it wants both stdin and stdout to be a real terminal, not just one, so a future implementation
+cannot write escape codes into a pipeline, and `flea --tui | head` is therefore refused. That
+interface is not built yet, so `flea --tui` in a terminal exits 2 saying so. A window launch with
+no non-empty `WAYLAND_DISPLAY` or `DISPLAY` exits 2 rather than failing inside `qs`. Giving both
+flags is a usage error naming the conflict, never a coin flip.
+
+`--default` opens no window: it sets the `inode/directory` handler, the `org.freedesktop.FileManager1`
+registration behind "Show in folder", Omarchy's two file-manager keys and the file chooser. `off`
+runs all four back, and three of them land where they started. The keys and the picker's window rule
+are marked blocks, the chooser routing is one key, and the registration is a file of Flea's own, so
+removing them leaves Omarchy's own behaviour; the handler is deleted rather than restored, so
+afterwards the `inode/directory` default is whatever the rest of the lookup resolves to,
+`org.gnome.Nautilus.desktop` on stock Omarchy. `flea --default off` names that resulting handler
+on its own line, so it does not claim more than it did. If you had pinned a handler yourself, the
+claim run printed it as `was <id>`, and `xdg-mime default <id> inode/directory` is how you put
+that pin back by hand. See [`docs/install.md`](docs/install.md).
+
+The usage above lists the modes meant to be typed. It deliberately leaves out the ones Flea's own
+parts drive: `--backend`, `--prewarm`, `--open`, `--terminal`, `--pick` and `--print-target` are
+all real and all absent from it, so being unlisted says nothing about whether a mode exists.
+`flea --open <path>` is what Enter on a file other than an archive runs, and it hands the file to `gio open` and waits
+for it, while `flea --terminal <dir>` is what the topbar's terminal button and `Ctrl+T` run, and
+it hands the directory to `xdg-terminal-exec --dir=`. **Both print nothing whatever when they
+succeed**, and exit 0, so silence from one of them is the success case and not a missing mode.
+`flea --pick <reply-file>` is the file chooser's own entry point, run by `tools/flea-portal` for
+one portal request rather than by a person. See `AGENTS.md` for their contract.
 
 `--select` accepts either a `file://` URI (percent-decoded) or a bare path, opens its
 parent directory, and puts the cursor and the selection on that one entry once the
 directory's first page of rows arrives. A target that does not exist still opens its
 parent, with nothing selected: this is the one nautilus call site the Dropbox panel needs
-(`Service.qml` reveals a synced file with `nautilus --select`). `--print-target` is a
+(`Service.qml` reveals a synced file with `nautilus --select`), and it is also the whole of
+what `org.freedesktop.FileManager1.ShowItems` means, so `tools/flea-filemanager1` answers
+that call by running this. `--print-target` is a
 test-only flag that resolves `--select`'s pair and prints `<parent> <target>` instead of
 opening a window; it exists so the resolution is testable without a display.
 
@@ -500,7 +554,7 @@ and the application cannot disagree.
 | Ctrl-d, Ctrl-u | Half a viewport |
 | `h`, Backspace, Ctrl-Up | Parent directory; Ctrl-Up under the Mac preset |
 | `l` | Browse forward: enter a directory, preview a file, page a PDF, or activate a rail/share row; unused in media |
-| Return, Enter, Ctrl-Down | Open a directory, or open a file with the desktop's handler; Ctrl-Down under the Mac preset |
+| Return, Enter, Ctrl-Down | Open a directory, open an archive in Flea's own view, or open any other file with the desktop's handler; Ctrl-Down under the Mac preset |
 | Space | Quick Look, and close it |
 | Left, Right | Page a PDF, or seek in media |
 | `v` | Toggle selection on the row |
@@ -518,7 +572,7 @@ and the application cannot disagree.
 | `a`, Ctrl-k | Add a network mount; `a` from the rail, Ctrl-k from either view under the Mac preset |
 | Ctrl-e | Eject the rail's device, or the removable volume the listing is inside |
 | Ctrl-t | Open the configured terminal in the directory being shown; the topbar's terminal button is the same action |
-| Ctrl-1, Ctrl-2, Ctrl-3 | List, columns, grid, under the Mac preset |
+| Ctrl-1, Ctrl-2, Ctrl-3 | List, columns, grid, under the Default, Vim and Mac presets |
 | Ctrl-Shift-1, Ctrl-Shift-2, Ctrl-Shift-3 | The same three, under the Windows preset |
 | Ctrl-h | Show hidden files, under the Windows preset |
 | Ctrl-Shift-+, Ctrl-Shift-- , Ctrl-Shift-0 | Text size up a stop, down a stop, back to following Omarchy |
